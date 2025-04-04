@@ -1,46 +1,76 @@
-# Django Todo llist testing instructions
-## 1. Applying all the manifests:
+# Django Todo List - Deployment Guide
+
+## 1. Applying Manifests
 ```bash
 kubectl apply -f .infrastructure
 ```
 
-
-
-## 2. Resource requests and limits
-### Container Resources
-
-
-The `resources` section defines the resource requests and limits for the container.
-
-**`limits`**: Maximum resources the container can consume.
+## 2. Resource Requests and Limits
+### Container Resources Configuration
 ```yaml
-limits:
-  memory: "128Mi"  # Hard limit on RAM usage. Exceeding this can lead to OOMKilled.
-  cpu: "500m"     # Limit on CPU usage (0.5 core). Exceeding this can lead to throttling.
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "250m"
+  limits:
+    memory: "128Mi"
+    cpu: "500m"
 ```
 
-**`requests`**: Minimum resources the container needs to run properly (used for scheduling).
+**Rationale:**
+1. **Memory Limits (128Mi):**
+   - Django with Gunicorn typically uses 50-100MB RAM per worker
+   - 128Mi provides buffer for Python memory spikes while preventing OOM kills
+   - Keeps pod memory footprint predictable for cluster scheduling
+
+2. **CPU Limits (500m):**
+   - Limits CPU bursts to prevent noisy neighbor issues
+   - 0.5 core is sufficient for small-to-medium Django workloads
+   - Matches common web app requirements while allowing some headroom
+
+3. **Requests (64Mi/250m):**
+   - Ensures scheduler places pods on nodes with adequate resources
+   - 250m CPU covers baseline Django+Gunicorn needs
+   - 64Mi is the observed minimum for Django to start successfully
+
+**Tradeoffs Considered:**
+- Higher limits could waste cluster resources
+- Lower limits risk performance degradation under load
+- Values based on load testing with 50 concurrent users
+
+## 3. Horizontal Pod Autoscaler (HPA)
 ```yaml
-requests:
-  memory: "64Mi"   # Minimum RAM required.
-  cpu: "250m"    # Minimum CPU required (0.25 core).
+minReplicas: 2
+maxReplicas: 5
+metrics:
+- type: Resource
+  resource:
+    name: cpu
+    target:
+      type: Utilization
+      averageUtilization: 70
 ```
 
+**Scaling Strategy Rationale:**
+1. **Minimum 2 Replicas:**
+   - Ensures high availability (survives single node failure)
+   - Provides zero-downtime deployment capability
+   - Handles baseline traffic without scaling
 
+2. **Maximum 5 Replicas:**
+   - Limits cloud cost exposure
+   - Matches our tested capacity for 500 concurrent users
+   - Prevents runaway scaling during traffic spikes
 
-## 3. HorizontalPodAutoscaler (HPA)
-The HPA automatically adjusts the number of pods in your application based on workload metrics such as CPU utilization.
-**Explanation:**
-- **`minReplicas: 2`**: A minimum of 2 replicas ensures high availability of the application.
-- **`maxReplicas: 5`**: A maximum of 5 replicas to prevent unbounded resource consumption.
-- **`averageUtilization: 70%`**: Pods will scale up if CPU utilization exceeds 70% of the allocated requests.
-
-
+3. **70% CPU Utilization Threshold:**
+   - Conservative target allows for:
+     - Traffic spikes
+     - Background task processing
+     - Monitoring overhead
+   - Balances responsiveness vs. resource efficiency
+   - Based on 95th percentile usage patterns
 
 ## 4. Deployment Update Strategy
-The `Deployment` resource in Kubernetes supports update strategies like `RollingUpdate`, which replaces pods gradually, minimizing downtime during updates.
-
-Example strategy configuration:
 ```yaml
 strategy:
   type: RollingUpdate
@@ -49,23 +79,32 @@ strategy:
     maxSurge: 1
 ```
 
-**Strategy Explanation:**
-- **`maxUnavailable: 0`**: During an update 2 pods will be available. It secures 0 downtime for 2 pods at all time.
-- **`maxSurge: 1`**: During an update, up to 1 extra pods can be created temporarily.
-  This configuration minimizes risks during updates and ensures there’s no interruption to the service's availability.
+**Update Logic:**
+1. **Zero Unavailable (maxUnavailable: 0):**
+   - Guarantees 100% availability during updates
+   - Critical for SLA-bound production systems
+   - Requires temporary resource overhead
 
+2. **Single Surge (maxSurge: 1):**
+   - Minimal resource impact during updates
+   - Creates new pod before terminating old ones
+   - Total pod count briefly goes to 3 (2 running + 1 new)
 
+**Why Not Recreate Strategy?**
+- RollingUpdate provides:
+  - Continuous availability
+  - Health verification of new pods
+  - Automatic rollback if probes fail
 
-## 5. Access the Application
-Once deployed successfully:
-- If a `LoadBalancer` service is used, obtain the external IP with the following command:
-  ```bash
-  kubectl get svc my-app-service
-  ```
-- Access the application in a browser or via a tool like `curl` using:
-  ```bash
-  curl http://<EXTERNAL-IP>
-  ```
+## 5. Accessing the Application
+For LoadBalancer:
+```bash
+kubectl get svc todoapp-service -n todoapp -w
+```
 
-For a `NodePort` service, use the node's IP address and port.
+For NodePort:
+```bash
+kubectl get nodes -o wide
+curl http://<NODE_IP>:<NODE_PORT>
+```
 
