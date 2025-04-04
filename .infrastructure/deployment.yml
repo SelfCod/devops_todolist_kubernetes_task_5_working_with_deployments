@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:  todoapp-deployment
+  namespace: todoapp
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      name: todoapps-from-deployment 
+  template:
+    metadata:
+      labels:
+        name: todoapps-from-deployment
+    spec:
+      containers:
+      - name: todoapp
+        image: ikulyk404/todoapp:3.0.0
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+          requests:
+            memory: "64Mi"   # Minimum RAM required.
+            cpu: "250m"    # Minimum CPU required (0.25 core).        
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: api/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: api/ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
